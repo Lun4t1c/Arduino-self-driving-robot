@@ -58,9 +58,10 @@ void Car::slowStart(int ms) {
 	Serial.println("Slow starting car...");
 	digitalWrite(IN1, HIGH);
 	digitalWrite(IN3, HIGH);
-	for (int i = 0; i <= 255; i++) {
+	for (int i = 0; i <= TOP_SPEED; i++) {
 		analogWrite(ENA, i);
 		analogWrite(ENB, i);
+		currentSpeed = i;
 		delay(ms);
 	}
 }
@@ -70,7 +71,7 @@ void Car::slowStop(int ms) {
 	Serial.println("Slow stopping car...");
 	digitalWrite(IN1, HIGH);
 	digitalWrite(IN3, HIGH);
-	for (int i = 255; i >= 0; i--) {
+	for (int i = currentSpeed; i >= 0; i--) {
 		analogWrite(ENA, i);
 		analogWrite(ENB, i);
 		delay(ms);
@@ -110,13 +111,20 @@ void Car::turnRight() {
 
 //rotate car backwards
 void Car::turnAround(){
-	turnLeft();
-	turnLeft();
+	leftTrackBackward();
+	delay(TURN_DELAY);
+
+	stop();
+
+	rightTrackForward();
+	delay(TURN_DELAY);
+	stop();
 }
 
 //start car immediately
 void Car::start(){
 	Serial.println("Starting car...");
+	currentSpeed = 255;
 	digitalWrite(IN1, HIGH);
 	digitalWrite(IN3, HIGH);
 
@@ -178,18 +186,21 @@ void Car::travelForward(){
 }
 
 void Car::travelLeft(){
-	turnLeft();
+	//turnLeft();
+	turnLeftSingleTrack();
 	slowStart();
 }
 
 void Car::travelRight(){
-	turnRight();
+	//turnRight();
+	turnRightSingleTrack();
 	slowStart();
 }
 
 void Car::travelBackward(){
 	turnAround();
-	slowStart();
+	scanArea();
+	determineDirectionAndTravel();
 }
 #pragma endregion
 
@@ -244,24 +255,31 @@ void Car::resetServo(){
 Car::directions Car::determineDirection(){
 	if (pLastAreaScan == nullptr) return NULL_SCAN;
 
-	if (pLastAreaScan[AREA_SCAN_MAX / 2] > MAX_ULTRASONIC_DISTANCE)
+	//check forward
+	if (pLastAreaScan[AREA_SCAN_MAX / 2] >= START_DISTANCE)
 		return FORWARD;
 
-	if (pLastAreaScan[AREA_SCAN_MIN] > MAX_ULTRASONIC_DISTANCE)
+	//check left
+	if (pLastAreaScan[AREA_SCAN_MIN] >= START_DISTANCE)
 		return LEFT;
 	
-	if (pLastAreaScan[AREA_SCAN_MAX] > MAX_ULTRASONIC_DISTANCE)
+	//check right
+	if (pLastAreaScan[AREA_SCAN_MAX] >= START_DISTANCE)
 		return RIGHT;
 
+	//otherwise turn around
 	return BACKWARD;
 }
 #pragma endregion
 
 #pragma region Interactions
+//switch current state
 void Car::switchState(Car::states nextState) {
+	currentState = nextState;
 	recolorLed(nextState);
 }
 
+//change RGB LED color according to next state
 void Car::recolorLed(Car::states nextState){
 
 	switch(nextState){
@@ -272,6 +290,9 @@ void Car::recolorLed(Car::states nextState){
 			break;
 
 		case PLAYFUL:
+			digitalWrite(LedRed, HIGH);
+			digitalWrite(LedGreen, LOW);
+			digitalWrite(LedBlue, HIGH);
 			break;
 
 		case TRAVEL:
@@ -282,12 +303,19 @@ void Car::recolorLed(Car::states nextState){
 
 		case DISORIENTED:
 			digitalWrite(LedRed, HIGH);
-			digitalWrite(LedGreen, HIGH);
+			digitalWrite(LedGreen, LOW);
+			digitalWrite(LedBlue, LOW);
+			break;
+
+		case STARTLED:
+			digitalWrite(LedRed, HIGH);
+			digitalWrite(LedGreen, LOW);
 			digitalWrite(LedBlue, LOW);
 			break;
 	}
 }
 
+//buzzer sound
 void Car::soundScreech(int ms){
 	tone(BuzzerPin, 10750, ms);
 }
@@ -322,6 +350,8 @@ void Car::setup(){
 	pUltrasonic = new Ultrasonic(UsTrigger, UsEcho);
 	scanArea();
 	lastForwardScan = pUltrasonic->read();
+
+	determineDirectionAndTravel();
 }
 
 void Car::leftTrackForward(){
@@ -331,8 +361,8 @@ void Car::leftTrackForward(){
 }
 
 void Car::leftTrackBackward(){
-	digitalWrite(IN1, HIGH);
-	digitalWrite(IN2, LOW);
+	digitalWrite(IN1, LOW);
+	digitalWrite(IN2, HIGH);
 	digitalWrite(ENA, HIGH);
 }
 
@@ -349,8 +379,8 @@ void Car::rightTrackForward(){
 }
 
 void Car::rightTrackBackward(){
-	digitalWrite(IN3, HIGH);
-	digitalWrite(IN4, LOW);
+	digitalWrite(IN3, LOW);
+	digitalWrite(IN4, HIGH);
 	digitalWrite(ENB, HIGH);
 }
 
@@ -390,24 +420,16 @@ void Car::playAround(){
 
 
 void Car::testFunc(){
-	digitalWrite(LedRed, HIGH);
-	digitalWrite(LedGreen, LOW);
-	digitalWrite(LedBlue, LOW);
-	delay(1500);
+	stop();
+	Serial.println("leftTrackBackward");
+	leftTrackBackward();
+	delay(2000);
 
-	digitalWrite(LedRed, LOW);
-	digitalWrite(LedGreen, HIGH);
-	digitalWrite(LedBlue, LOW);
-	delay(1500);
-
-	digitalWrite(LedRed, LOW);
-	digitalWrite(LedGreen, LOW);
-	digitalWrite(LedBlue, HIGH);
-	delay(1500);
-
-	digitalWrite(LedRed, HIGH);
-	digitalWrite(LedGreen, HIGH);
-	digitalWrite(LedBlue, HIGH);
+	stop();
+	Serial.println("rightTrackBackward");
+	rightTrackBackward();
+	delay(2000);
+	slowStop();
 }
 
 
@@ -416,8 +438,10 @@ void Car::testFunc(){
 
 void Car::travelLoop(){
 	int forwardScan = getDistance();
+
 	if (forwardScan <= STOP_DISTANCE){
-		Serial.println("BEnc");
+		Serial.print("Obstacle detected: ");
+		Serial.println(forwardScan);
 		//immediately stop car if obstacle appears suddenly (specified by PANIC_STOP_THRESHOLD config)
 		//slowly stop car if obstacle was detected from far away
 		if ( (lastForwardScan - forwardScan) > PANIC_STOP_THRESHOLD ) {
@@ -431,33 +455,38 @@ void Car::travelLoop(){
 		scanArea();
 
 		//determine where to go next
-		Car::directions d = determineDirection();
-		Serial.print("Determined direction - ");
-		Serial.println(d);
-		switch (d) {
-			case FORWARD:
-				travelForward();
-				break;
-
-			case LEFT:
-				travelLeft();
-				break;
-
-			case RIGHT:
-				travelRight();
-				break;
-
-			case BACKWARD:
-				travelBackward();
-				break;
-
-			case NULL_SCAN:
-				break;
-
-			default:
-				break;
-		}
-
-		switchState(TRAVEL);
+		determineDirectionAndTravel();
 	}
+}
+
+//helper function to avoid code redundancy in setup()
+void Car::determineDirectionAndTravel(){
+	Car::directions d = determineDirection();
+	Serial.print("Determined direction - ");
+	Serial.println(d);
+	switch (d) {
+		case FORWARD:
+			travelForward();
+			break;
+
+		case LEFT:
+			travelLeft();
+			break;
+
+		case RIGHT:
+			travelRight();
+			break;
+
+		case BACKWARD:
+			travelBackward();
+			break;
+
+		case NULL_SCAN:
+			break;
+
+		default:
+			break;
+	}
+
+	switchState(TRAVEL);
 }
